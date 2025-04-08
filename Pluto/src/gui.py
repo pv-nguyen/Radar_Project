@@ -12,7 +12,7 @@ from numpy import arange, cos, log10, pi, sin
 from numpy.fft import fft, fft2, fftshift, ifft2, ifftshift
 from PyQt6.QtCore import Qt
 # from PyQt6.QtSvg import QSvgWidget
-from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QLabel
 from pyqtgraph.Qt import QtCore, QtGui
 from scipy import interpolate, signal
 
@@ -25,11 +25,22 @@ class MainWindow(QMainWindow):
 
     def UiComponents(self):
         widget = QWidget()
-
         layout = QGridLayout()
-        self.fft_plot = pg.PlotWidget()
 
-        layout.addWidget(self.fft_plot,0,2)
+        self.fft_plot = pg.PlotWidget()
+        layout.addWidget(self.fft_plot,1,1)
+
+        self.water = pg.PlotWidget()
+        layout.addWidget(self.water,2,1)
+
+        self.radarMap = pg.PlotWidget()
+        layout.addWidget(self.radarMap,1,0,2,1)
+
+        self.recognitionLabel = QLabel()
+        self.recognitionLabel.setText("test")
+        layout.addWidget(self.recognitionLabel,0,0,1,2)
+
+
         widget.setLayout(layout)
         self.setCentralWidget(widget)
     pass
