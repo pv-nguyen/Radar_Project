@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QLabel
 from pyqtgraph.Qt import QtCore, QtGui
 from scipy import interpolate, signal
+import params
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -22,12 +23,22 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Plots")
         self.UiComponents()
         self.show()
+        
 
     def UiComponents(self):
+
+        signal_freq = params.signal_freq
+        freq = params.freq
+        plot_freq = params.plot_freq
+
         widget = QWidget()
         layout = QGridLayout()
 
-        self.fft_plot = pg.PlotWidget()
+        self.fft_plot = pg.plot()
+        self.fft_plot.setMinimumWidth(600)
+        self.fft_curve = self.fft_plot.plot(freq,pen={'color':'y','width':2})
+        self.fft_plot.setXRange(signal_freq,signal_freq+plot_freq)
+        self.fft_plot.setYRange(-60,0)
         layout.addWidget(self.fft_plot,1,1)
 
         self.water = pg.PlotWidget()
@@ -45,15 +56,18 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(widget)
     pass
 
-app = QApplication(sys.argv)
+#run gui, just for testing gui by itself, will be called from main
+# app = QApplication(sys.argv)
 
-window = MainWindow()
 
-def update():
-    print("update")
+# params.init()
+# window = MainWindow()
 
-timer = QtCore.QTimer()
-timer.timeout.connect(update)
-timer.start(1000)
+# def update():
+#     print("update")
 
-app.exec()
+# timer = QtCore.QTimer()
+# timer.timeout.connect(update)
+# timer.start(1000)
+
+# app.exec()

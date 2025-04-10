@@ -16,8 +16,13 @@ import PyQt5
 # from PyQt5.QtCore import Qt
 # from PyQt5.QtSvg import QSvgWidget
 # from PyQt5.QtWidgets import *
+from PyQt6.QtWidgets import QApplication
 from pyqtgraph.Qt import QtCore, QtGui
 from scipy import interpolate, signal
+from gui import MainWindow
+import params
+
+params.init()
 
 #Get IP addresses
 load_dotenv()
@@ -28,6 +33,19 @@ except:
     print("Env File not Found")
     rpi_ip = "ip:phaser.local"
     sdr_ip = "ip:192.168.2.1"
+
+#receive and transmit parameters
+output_freq = 10e9
+sample_rate = params.fs     #ADC sample rate of SDR, 600KHz
+center_freq = 2.1e9     #Intermediate frequency after downconverting for receive and before upconverting for transmit
+signal_freq = params.signal_freq     #Frequency of what we send out
+default_chirp_bw = 500e6
+ramp_time = 500  # 500 microseconds
+rx_gain = 30
+num_slices = 100        #Water fall plot stuff
+fft_size = params.fft_size    #
+plot_freq = 100e3   
+img_array = np.zeros((num_slices, fft_size))
 
 #Instantiate SDR (Pluto) and Phaser objects
 my_sdr = adi.ad9361(uri=sdr_ip)
@@ -46,27 +64,19 @@ for i in range(0, len(gain_list)):
     my_phaser.set_chan_gain(i, gain_list[i], apply_cal=True) 
 
 #Raspberry Pi GPIO
-my_phaser._gpios.gpio_tx_sw = 0  # 0 = TX_OUT_2, 1 = TX_OUT_1
+my_phaser._gpios.gpio_tx_sw = 1  # 0 = TX_OUT_2, 1 = TX_OUT_1
 my_phaser._gpios.gpio_vctrl_1 = 1 # 1=Use onboard PLL/LO source  (0=disable PLL and VCO, and set switch to use external LO input)
 my_phaser._gpios.gpio_vctrl_2 = 1 # 1=Send LO to transmit circuitry  (0=disable Tx path, and send LO to LO_OUT)
-
-#receive and transmit variables
-sample_rate = 0.6e6     #ADC sample rate of SDR, 600KHz
-center_freq = 2.2e9     #Intermediate frequency after downconverting for receive and before upconverting for transmit
-signal_freq = 100e3     #Frequency of what we send out
-num_slices = 200                                #Water fall plot stuff
-fft_size = 1024 * 16                            #
-img_array = np.zeros((num_slices, fft_size))
 
 #configure SDR rx channels
 my_sdr.sample_rate = int(sample_rate)
 my_sdr.rx_lo = int(center_freq) #offset for the mixed down intermediate frequency, the RF is at 10 GHz
 my_sdr.rx_enabled_channels = [0, 1]  # enable Rx1 (voltage0) and Rx2 (voltage1)
-my_sdr.rx_buffer_size = int(fft_size) 
+#my_sdr.rx_buffer_size = int(fft_size) 
 my_sdr.gain_control_mode_chan0 = "manual"  # manual or slow_attack
 my_sdr.gain_control_mode_chan1 = "manual"  # manual or slow_attack
-my_sdr.rx_hardwaregain_chan0 = int(30)  # must be between -3 and 70
-my_sdr.rx_hardwaregain_chan1 = int(30)  # must be between -3 and 70
+my_sdr.rx_hardwaregain_chan0 = int(rx_gain)  # must be between -3 and 70
+my_sdr.rx_hardwaregain_chan1 = int(rx_gain)  # must be between -3 and 70
 # Configure Tx
 my_sdr.tx_lo = int(center_freq)
 my_sdr.tx_enabled_channels = [0, 1]
@@ -75,14 +85,13 @@ my_sdr.tx_hardwaregain_chan0 = -88  # must be between 0 and -88
 my_sdr.tx_hardwaregain_chan1 = -0  # must be between 0 and -88rx
 
 # Configure the ADF4159 (Local Oscillator) Rampling PLL, We implement the chirp in the ADF4159 to do stretch processing
-output_freq = 12.1e9
-BW = 500e6
+vco_freq = int(output_freq + signal_freq + center_freq)
+BW = default_chirp_bw
 num_steps = 1000
-ramp_time = 1e3  # 1000 microseconds
 ramp_time_s = ramp_time / 1e6
-my_phaser.frequency = int(output_freq / 4)  # Output frequency divided by 4
+my_phaser.frequency = int(vco_freq / 4)  # Output frequency divided by 4
 my_phaser.freq_dev_range = int( BW / 4 )  # frequency deviation range in Hz.  This is the total freq deviation of the complete freq ramp
-my_phaser.freq_dev_step = int( BW / num_steps )  # frequency deviation step in Hz.  This is fDEV, in Hz.  Can be positive or negative
+my_phaser.freq_dev_step = int( ( BW / 4 ) / num_steps )  # frequency deviation step in Hz.  This is fDEV, in Hz.  Can be positive or negative
 my_phaser.freq_dev_time = int( ramp_time )  # total time (in us) of the complete frequency ramp
 my_phaser.delay_word = 4095  # 12 bit delay word.  4095*PFD = 40.95 us.  For sawtooth ramps, this is also the length of the Ramp_complete signal
 my_phaser.delay_clk = "PFD"  # can be 'PFD' or 'PFD*CLK1'
@@ -93,13 +102,6 @@ my_phaser.ramp_mode = "single_sawtooth_burst"  # ramp_mode can be:  "disabled", 
 my_phaser.sing_ful_tri = ( 0 )  # full triangle enable/disable -- this is used with the single_ramp_burst mode
 my_phaser.tx_trig_en = 1 # start a ramp with TXdata, allows chirp synchronization
 my_phaser.enable = 0  # 0 = PLL enable.  Write this last to update all the registers
-
-
-#beat frequency calculation variables
-fs = my_sdr.sample_rate
-c = my_phaser.c
-slope = BW / ramp_time_s
-N_frame = fft_size
 
 #TDD controller
 sdr_pins = adi.one_bit_adc_dac(sdr_ip)
@@ -175,10 +177,19 @@ i = np.cos(2 * np.pi * t * fc) * 2 ** 14
 q = np.sin(2 * np.pi * t * fc) * 2 ** 14
 iq = 1 * (i + 1j * q)
 
+#ramp parameters
+fs = int(my_sdr.sample_rate)
+N_frame = fft_size
+c = 3e8
+slope = BW / ramp_time_s
+freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
+dist = (freq - signal_freq) * c / (2 * slope)
+
 # transmit data from Pluto
 my_sdr._ctx.set_timeout(30000)
 my_sdr._rx_init_channels()
 my_sdr.tx([iq, iq])
+
 
 def get_data():
     #Burst signal from the Raspberry PI, hand over handling of synchronizing reading data buffer and chirp to PLUTO Sdr
@@ -191,7 +202,7 @@ def get_data():
     print(data)
     sum_data = data[0]+data[1] #sums the signals from the two ADAR1000s
     print("Summed RX data: ")
-    print(data)
+    print(sum_data)
 
     # select just the linear portion of the last chirp
     rx_bursts = np.zeros((num_chirps, good_ramp_samples), dtype=complex)
@@ -204,20 +215,33 @@ def get_data():
         win_funct = np.ones(len(rx_bursts[burst]))
         burst_data[start_offset_samples:(start_offset_samples+good_ramp_samples)] = rx_bursts[burst]*win_funct
 
-    win_funct = np.blackman(len(data))
-    y = data * win_funct
-    sp = np.absolute(np.fft.fft(y))
+    
+    # win_funct = np.blackman(len(data))
+    # y = data * win_funct
+    # sp = np.absolute(np.fft.fft(y))
+    sp = np.absolute(np.fft.fft(burst_data))
+    print("fft data: ")
+    print(sp)
     sp = np.fft.fftshift(sp)
     s_mag = np.abs(sp) / np.sum(win_funct)
     s_mag = np.maximum(s_mag, 10 ** (-15))
     s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
 
-    
+    window.fft_curve.setData(freq,s_dbfs)
 
-    freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
-    dist = (freq - signal_freq) * c / (2 * slope)
-    print ("Distance: "+str(dist[np.argmax(s_mag)]))
 
-while True:
-    time.sleep(1)
+#Create PyQt6 window
+app = QApplication(sys.argv)
+window = MainWindow()
+
+def update():
+    print("get data")
     get_data()
+    print("updated")
+
+#Connect timer signal to call update function
+timer = QtCore.QTimer()
+timer.timeout.connect(update)
+timer.start(10)
+
+app.exec()
