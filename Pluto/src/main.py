@@ -12,17 +12,17 @@ import pyqtgraph as pg
 from matplotlib import cm
 from numpy import arange, cos, log10, pi, sin
 from numpy.fft import fft, fft2, fftshift, ifft2, ifftshift
-import PyQt5
 # from PyQt5.QtCore import Qt
 # from PyQt5.QtSvg import QSvgWidget
 # from PyQt5.QtWidgets import *
 from PyQt6.QtWidgets import QApplication
 from pyqtgraph.Qt import QtCore, QtGui
 from scipy import interpolate, signal
-from gui import MainWindow
-import params
 
+import params
 params.init()
+from gui import MainWindow
+import range_doppler_plot as RD
 
 #Get IP addresses
 load_dotenv()
@@ -35,17 +35,21 @@ except:
     sdr_ip = "ip:192.168.2.1"
 
 #receive and transmit parameters
-output_freq = 10e9
+output_freq = params.output_freq
 sample_rate = params.fs     #ADC sample rate of SDR, 600KHz
-center_freq = 2.1e9     #Intermediate frequency after downconverting for receive and before upconverting for transmit
+center_freq = params.center_freq     #Intermediate frequency after downconverting for receive and before upconverting for transmit
 signal_freq = params.signal_freq     #Frequency of what we send out
-default_chirp_bw = 500e6
-ramp_time = 500  # 500 microseconds
-rx_gain = 30
-num_slices = 100        #Water fall plot stuff
+default_chirp_bw = params.default_chirp_bw
+ramp_time = params.ramp_time  # 500 microseconds
+rx_gain = params.rx_gain
+num_slices = params.num_slices        #Water fall plot stuff
 fft_size = params.fft_size    #
 plot_freq = 100e3   
 img_array = np.zeros((num_slices, fft_size))
+max_range = 100
+min_scale = 0
+max_scale = 100
+num_chirps = 256
 
 #Instantiate SDR (Pluto) and Phaser objects
 my_sdr = adi.ad9361(uri=sdr_ip)
@@ -53,8 +57,8 @@ my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
 
 #Initialize the two ADAR1000 beamformers
 my_phaser.configure(device_mode="rx") #ADAR100s are receive only array
-my_phaser.load_gain_cal()             #calibration files
-my_phaser.load_phase_cal()
+my_phaser.load_gain_cal("Pluto/calibration/gain_cal_val")             #calibration files
+my_phaser.load_phase_cal("Pluto/calibration/phase_cal_val")
 
 for i in range(0, 8):
     my_phaser.set_chan_phase(i, 0)  #set all phase to 0
@@ -113,7 +117,6 @@ tdd.sync_external = True
 tdd.startup_delay_ms = 0
 PRI_ms = ramp_time/1e3 + 1.0
 tdd.frame_length_ms = PRI_ms    # each chirp is spaced this far apart
-num_chirps = 1
 tdd.burst_count = num_chirps       # number of chirps in one continuous receive buffer
 
 tdd.channel[0].enable = True
@@ -185,13 +188,24 @@ slope = BW / ramp_time_s
 freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
 dist = (freq - signal_freq) * c / (2 * slope)
 
+#doppler spectrum
+wavelength = c / output_freq
+PRI_s = PRI_ms / 1e3
+PRF = 1 / PRI_s
+num_bursts = tdd.burst_count
+max_doppler_freq = PRF / 2
+max_doppler_vel = max_doppler_freq * wavelength / 2
+
 # transmit data from Pluto
 my_sdr._ctx.set_timeout(30000)
 my_sdr._rx_init_channels()
 my_sdr.tx([iq, iq])
 
 
+
 def get_data():
+    global win_funct
+
     #Burst signal from the Raspberry PI, hand over handling of synchronizing reading data buffer and chirp to PLUTO Sdr
     my_phaser._gpios.gpio_burst = 0 
     my_phaser._gpios.gpio_burst = 1
@@ -215,28 +229,35 @@ def get_data():
         win_funct = np.ones(len(rx_bursts[burst]))
         burst_data[start_offset_samples:(start_offset_samples+good_ramp_samples)] = rx_bursts[burst]*win_funct
 
-    
+    return burst_data, rx_bursts
     # win_funct = np.blackman(len(data))
     # y = data * win_funct
     # sp = np.absolute(np.fft.fft(y))
-    sp = np.absolute(np.fft.fft(burst_data))
+
+    # np.save("get_Data_256Chrip.npy",burst_data)
+
+def update_fft(burst_data):
+    
+    sp = np.absolute(np.fft.fft(burst_data)) #fft
     print("fft data: ")
     print(sp)
     sp = np.fft.fftshift(sp)
     s_mag = np.abs(sp) / np.sum(win_funct)
     s_mag = np.maximum(s_mag, 10 ** (-15))
     s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
-
     window.fft_curve.setData(freq,s_dbfs)
 
-
+    
 #Create PyQt6 window
 app = QApplication(sys.argv)
 window = MainWindow()
 
 def update():
+    global range_doppler
     print("get data")
-    get_data()
+    burst_data,rx_bursts=get_data()
+    update_fft(burst_data)
+    RD.update_2DFFT(rx_bursts)
     print("updated")
 
 #Connect timer signal to call update function
