@@ -21,6 +21,9 @@ from scipy import interpolate, signal
 
 import params
 params.init()
+
+import monopulse_tracking as monopulse
+from target_detection import cfar
 from gui import MainWindow
 import range_doppler_plot as RD
 
@@ -44,12 +47,13 @@ ramp_time = params.ramp_time  # 500 microseconds
 rx_gain = params.rx_gain
 num_slices = params.num_slices        #Water fall plot stuff
 fft_size = params.fft_size    #
-plot_freq = 100e3   
+plot_freq = params.plot_freq   
 img_array = np.zeros((num_slices, fft_size))
-max_range = 100
-min_scale = 0
-max_scale = 100
-num_chirps = 256
+num_steps = params.num_steps
+max_range = params.max_range
+min_scale = params.min_scale
+max_scale = params.max_scale
+num_chirps = params.num_chirps
 
 #Instantiate SDR (Pluto) and Phaser objects
 my_sdr = adi.ad9361(uri=sdr_ip)
@@ -57,18 +61,19 @@ my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
 
 #Initialize the two ADAR1000 beamformers
 my_phaser.configure(device_mode="rx") #ADAR100s are receive only array
-my_phaser.load_gain_cal("Pluto/calibration/gain_cal_val")             #calibration files
-my_phaser.load_phase_cal("Pluto/calibration/phase_cal_val")
+my_phaser.load_gain_cal("Pluto/calibration/gain_cal_val.pkl")             #calibration files
+my_phaser.load_phase_cal("Pluto/calibration/phase_cal_val.pkl")
 
 for i in range(0, 8):
-    my_phaser.set_chan_phase(i, 0)  #set all phase to 0
+    my_phaser.set_chan_phase(i, 0,apply_cal=True)  #set all phase to 0
 
-gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper to reduce sidelobes
+# gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper to reduce sidelobes
+gain_list = [127]*8
 for i in range(0, len(gain_list)):
     my_phaser.set_chan_gain(i, gain_list[i], apply_cal=True) 
 
 #Raspberry Pi GPIO
-my_phaser._gpios.gpio_tx_sw = 1  # 0 = TX_OUT_2, 1 = TX_OUT_1
+my_phaser._gpios.gpio_tx_sw = 0  # 0 = TX_OUT_2, 1 = TX_OUT_1
 my_phaser._gpios.gpio_vctrl_1 = 1 # 1=Use onboard PLL/LO source  (0=disable PLL and VCO, and set switch to use external LO input)
 my_phaser._gpios.gpio_vctrl_2 = 1 # 1=Send LO to transmit circuitry  (0=disable Tx path, and send LO to LO_OUT)
 
@@ -91,7 +96,6 @@ my_sdr.tx_hardwaregain_chan1 = -0  # must be between 0 and -88rx
 # Configure the ADF4159 (Local Oscillator) Rampling PLL, We implement the chirp in the ADF4159 to do stretch processing
 vco_freq = int(output_freq + signal_freq + center_freq)
 BW = default_chirp_bw
-num_steps = 1000
 ramp_time_s = ramp_time / 1e6
 my_phaser.frequency = int(vco_freq / 4)  # Output frequency divided by 4
 my_phaser.freq_dev_range = int( BW / 4 )  # frequency deviation range in Hz.  This is the total freq deviation of the complete freq ramp
@@ -116,7 +120,7 @@ tdd.enable = False         # disable TDD to configure the registers
 tdd.sync_external = True
 tdd.startup_delay_ms = 0
 PRI_ms = ramp_time/1e3 + 1.0
-tdd.frame_length_ms = PRI_ms    # each chirp is spaced this far apart
+tdd.frame_length_ms = PRI_ms       # each chirp is spaced this far apart
 tdd.burst_count = num_chirps       # number of chirps in one continuous receive buffer
 
 tdd.channel[0].enable = True
@@ -144,7 +148,7 @@ start_offset_time = tdd.channel[0].on_ms/1e3 + begin_offset_time
 start_offset_samples = int(start_offset_time * sample_rate)
 
 # size the fft for the number of ramp data points
-power=8
+power=params.power
 fft_size = int(2**power)
 num_samples_frame = int(tdd.frame_length_ms/1000*sample_rate)
 while num_samples_frame > fft_size:     
@@ -186,7 +190,7 @@ N_frame = fft_size
 c = 3e8
 slope = BW / ramp_time_s
 freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
-dist = (freq - signal_freq) * c / (2 * slope)
+dist = (freq - signal_freq) * c / (2 * slope) 
 
 #doppler spectrum
 wavelength = c / output_freq
@@ -201,6 +205,9 @@ my_sdr._ctx.set_timeout(30000)
 my_sdr._rx_init_channels()
 my_sdr.tx([iq, iq])
 
+#monopulse tracking variables
+d = my_phaser.element_spacing # 0.015 meters
+
 
 
 def get_data():
@@ -212,12 +219,8 @@ def get_data():
     my_phaser._gpios.gpio_burst = 0
 
     data = my_sdr.rx()
-    print("Raw RX data: ")
-    print(data)
     sum_data = data[0]+data[1] #sums the signals from the two ADAR1000s
-    print("Summed RX data: ")
-    print(sum_data)
-
+    
     # select just the linear portion of the last chirp
     rx_bursts = np.zeros((num_chirps, good_ramp_samples), dtype=complex)
     for burst in range(num_chirps):
@@ -225,11 +228,13 @@ def get_data():
         stop_index = start_index + good_ramp_samples
         rx_bursts[burst] = sum_data[start_index:stop_index]
         burst_data = np.ones(fft_size, dtype=complex)*1e-10
-        #win_funct = np.blackman(len(rx_bursts[burst]))
-        win_funct = np.ones(len(rx_bursts[burst]))
+        if params.blackman_taper:
+            win_funct = np.blackman(len(rx_bursts[burst]))
+        else:
+            win_funct = np.ones(len(rx_bursts[burst]))
         burst_data[start_offset_samples:(start_offset_samples+good_ramp_samples)] = rx_bursts[burst]*win_funct
 
-    return burst_data, rx_bursts
+    return burst_data, rx_bursts, data
     # win_funct = np.blackman(len(data))
     # y = data * win_funct
     # sp = np.absolute(np.fft.fft(y))
@@ -239,30 +244,61 @@ def get_data():
 def update_fft(burst_data):
     
     sp = np.absolute(np.fft.fft(burst_data)) #fft
-    print("fft data: ")
-    print(sp)
     sp = np.fft.fftshift(sp)
     s_mag = np.abs(sp) / np.sum(win_funct)
     s_mag = np.maximum(s_mag, 10 ** (-15))
     s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
-    window.fft_curve.setData(freq,s_dbfs)
 
-    
+    freqThreshold,targets = cfar(s_dbfs,params.num_guard_cells,params.num_ref_cells,params.bias,'average')
+    window.fft_threshold.setData(freq,freqThreshold)
+
+    if params.apply_cfar:
+        targets = targets.filled(-200)
+        window.fft_curve.setData(freq,targets)
+        return targets
+    else:
+        window.fft_curve.setData(freq,s_dbfs)
+        return s_dbfs
+
+def update_waterfall(fspectrum_data):
+    window.img_array = np.roll(window.img_array,1,axis=0)
+    window.img_array[0]= fspectrum_data
+    window.imageitem.setImage(window.img_array, autoLevels=True)
+    window.imageitem.setLevels([params.low_level,params.high_level])
+
 #Create PyQt6 window
 app = QApplication(sys.argv)
 window = MainWindow()
 
 def update():
     global range_doppler
+
     print("get data")
-    burst_data,rx_bursts=get_data()
-    update_fft(burst_data)
-    RD.update_2DFFT(rx_bursts)
+    burst_data,rx_bursts,data=get_data()
+    
+    # delay_phases, peak_dbfs, peak_delay, steer_angle, peak_sum, peak_delta, monopulse_phase = monopulse.scan_for_DOA(data)
+
+    # window.DOA.setText(f"Steer Angle: {steer_angle}")
+
+    freqData = update_fft(burst_data)
+    update_waterfall(freqData)
+
+    # RD.update_2DFFT(rx_bursts)
     print("updated")
 
 #Connect timer signal to call update function
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
-timer.start(10)
+timer.start(0)
 
 app.exec()
+
+my_sdr.tx_destroy_buffer()
+print("Program finished and Pluto Tx Buffer Cleared")
+# disable TDD and revert to non-TDD (standard) mode
+tdd.enable = False
+sdr_pins.gpio_phaser_enable = False
+tdd.channel[1].polarity = not(sdr_pins.gpio_phaser_enable)
+tdd.channel[2].polarity = sdr_pins.gpio_phaser_enable
+tdd.enable = True
+tdd.enable = False
