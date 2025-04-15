@@ -18,6 +18,8 @@ from numpy.fft import fft, fft2, fftshift, ifft2, ifftshift
 from PyQt6.QtWidgets import QApplication
 from pyqtgraph.Qt import QtCore, QtGui
 from scipy import interpolate, signal
+import pickle
+from npy_append_array import NpyAppendArray
 
 import params
 params.init()
@@ -67,8 +69,10 @@ my_phaser.load_phase_cal("Pluto/calibration/phase_cal_val.pkl")
 for i in range(0, 8):
     my_phaser.set_chan_phase(i, 0,apply_cal=True)  #set all phase to 0
 
-# gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper to reduce sidelobes
-gain_list = [127]*8
+if params.blackman_taper:
+    gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper to reduce sidelobes
+else:
+    gain_list = [127]*8
 for i in range(0, len(gain_list)):
     my_phaser.set_chan_gain(i, gain_list[i], apply_cal=True) 
 
@@ -121,6 +125,7 @@ tdd.sync_external = True
 tdd.startup_delay_ms = 0
 PRI_ms = ramp_time/1e3 + 1.0
 tdd.frame_length_ms = PRI_ms       # each chirp is spaced this far apart
+print("chirp_delay: ",PRI_ms)
 tdd.burst_count = num_chirps       # number of chirps in one continuous receive buffer
 
 tdd.channel[0].enable = True
@@ -146,6 +151,7 @@ print("actual freq dev time = ", ramp_time)
 good_ramp_samples = int((ramp_time_s-begin_offset_time) * sample_rate)
 start_offset_time = tdd.channel[0].on_ms/1e3 + begin_offset_time
 start_offset_samples = int(start_offset_time * sample_rate)
+print("start_offset_time: ",start_offset_time,"\nstart_offset_samples: ",start_offset_samples,"\ngood_ramp_samples: ",good_ramp_samples)
 
 # size the fft for the number of ramp data points
 power=params.power
@@ -208,10 +214,11 @@ my_sdr.tx([iq, iq])
 #monopulse tracking variables
 d = my_phaser.element_spacing # 0.015 meters
 
-
+time_frame_data = []
+total_data = []
 
 def get_data():
-    global win_funct
+    global win_funct, time_frame_data
 
     #Burst signal from the Raspberry PI, hand over handling of synchronizing reading data buffer and chirp to PLUTO Sdr
     my_phaser._gpios.gpio_burst = 0 
@@ -220,6 +227,17 @@ def get_data():
 
     data = my_sdr.rx()
     sum_data = data[0]+data[1] #sums the signals from the two ADAR1000s
+
+    if window.acquire:
+        time_frame_data.append(sum_data)
+        window.framesLeft-=1
+        if window.framesLeft <= 0:
+            window.acquire=False
+            window.recording=False
+            total_data.append(time_frame_data)
+            time_frame_data = []
+            print("data saved!")
+            window.countdownTxt.setText("done!")
     
     # select just the linear portion of the last chirp
     rx_bursts = np.zeros((num_chirps, good_ramp_samples), dtype=complex)
@@ -228,10 +246,12 @@ def get_data():
         stop_index = start_index + good_ramp_samples
         rx_bursts[burst] = sum_data[start_index:stop_index]
         burst_data = np.ones(fft_size, dtype=complex)*1e-10
-        if params.blackman_taper:
-            win_funct = np.blackman(len(rx_bursts[burst]))
-        else:
-            win_funct = np.ones(len(rx_bursts[burst]))
+        # if params.blackman_taper:
+        #     win_funct = np.blackman(len(rx_bursts[burst]))
+        # else:
+        #     win_funct = np.ones(len(rx_bursts[burst]))
+        win_funct = np.ones(len(rx_bursts[burst]))
+        # win_funct = np.blackman(len(rx_bursts[burst]))
         burst_data[start_offset_samples:(start_offset_samples+good_ramp_samples)] = rx_bursts[burst]*win_funct
 
     return burst_data, rx_bursts, data
@@ -273,7 +293,7 @@ window = MainWindow()
 def update():
     global range_doppler
 
-    print("get data")
+    # print("get data")
     burst_data,rx_bursts,data=get_data()
     
     # delay_phases, peak_dbfs, peak_delay, steer_angle, peak_sum, peak_delta, monopulse_phase = monopulse.scan_for_DOA(data)
@@ -284,7 +304,8 @@ def update():
     update_waterfall(freqData)
 
     # RD.update_2DFFT(rx_bursts)
-    print("updated")
+    # print("updated")
+    
 
 #Connect timer signal to call update function
 timer = QtCore.QTimer()
@@ -292,6 +313,40 @@ timer.timeout.connect(update)
 timer.start(0)
 
 app.exec()
+
+if (len(total_data)>0):
+    new_config = {
+        "data_start":0,
+        "data_size":len(total_data),
+        "fs":fs,
+        "fft_size":fft_size,
+        "num_chirps":num_chirps,
+        "good_ramp_samples":good_ramp_samples,
+        "num_samples_frame":num_samples_frame,
+        "start_offset_samples":start_offset_samples,
+        "num_frames":params.num_frames
+    }
+    if (os.path.exists(params.save_file)):
+        with NpyAppendArray(params.save_file) as f:
+            f.append(np.array(total_data))
+        with open(params.save_file[:-4]+"_config.pkl","rb+") as f:
+            config = pickle.load(f)
+            new_config["data_start"]=config["total_size"]
+            config["total_size"] = config["total_size"]+new_config["data_size"]
+            config["data_configs"].append(new_config)
+        with open(params.save_file[:-4]+"_config.pkl","wb") as f:
+            pickle.dump(config,f)
+    else:  
+        first_config = {
+            "total_size":len(total_data),
+            "data_configs":[new_config]
+        }
+        np.save(params.save_file,total_data)
+        print(params.save_file[:-4]+"_config.pickle")
+        with open(params.save_file[:-4]+"_config.pkl","xb") as file:
+            pickle.dump(first_config,file)
+        print(f"no previous data, file and config created: {params.save_file}")
+
 
 my_sdr.tx_destroy_buffer()
 print("Program finished and Pluto Tx Buffer Cleared")

@@ -17,7 +17,7 @@ from pyqtgraph.Qt import QtCore, QtGui
 if __name__ == "__main__":
     params.init()
 
-radar_data = np.load("Pluto/data/FFT2D_256Chirps.npy")
+radar_data = np.load("Pluto/test/FFT2D_256Chirps.npy")
 # print(radar_data)
 
 c = 3e8

@@ -4,19 +4,19 @@ def init():
 
     #Parameters for sampling, receiving and transmitting
     global output_freq,ramp_time,rx_gain, fs, center_freq, default_chirp_bw, num_chirps, BW, num_steps
-    fs=4e6                  #sampling rate
+    fs=5e6                  #sampling rate
     num_chirps = 1#256
     output_freq = 10e9
-    center_freq = 2e9     #Intermediate frequency after downconverting for receive and before upconverting for transmit
+    center_freq = 2.1e9     #Intermediate frequency after downconverting for receive and before upconverting for transmit
     default_chirp_bw = 500e6
     BW = default_chirp_bw
-    ramp_time = 300#500         # 500 microseconds
+    ramp_time = 500#500         # 500 microseconds
     num_steps = ramp_time#1000
-    rx_gain = 40
+    rx_gain = 33
     
     #Parameters for fft plotting
     global blackman_taper,power,N_frame,signal_freq,plot_freq,freq,fft_size
-    blackman_taper = False
+    blackman_taper = True
     power = 8
     fft_size = 1024*8
     N_frame = fft_size
@@ -46,4 +46,10 @@ def init():
     num_ref_cells = 15
     show_threshold = True
     apply_cfar = False
+
+    #Data Recording
+    global time_record, num_frames,save_file
+    time_record = 1.5
+    num_frames = 40
+    save_file = "data/trash/trashdump.npy"
 

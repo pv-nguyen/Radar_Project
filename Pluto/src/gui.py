@@ -23,9 +23,17 @@ import params
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.recording = False
+        self.acquire = False
+        self.countdown = -1
+        self.countdownTimer = QtCore.QTimer()
+        self.framesLeft = -1
         self.setWindowTitle("Plots")
         self.UiComponents()
         self.show()
+        self.saveFile = ""
+        self.countdownTimer.timeout.connect(self.start_countdown)
+        
         
 
     def UiComponents(self):
@@ -43,13 +51,13 @@ class MainWindow(QMainWindow):
         self.fft_plot = pg.plot()
         self.fft_plot.setMinimumWidth(600)
         self.fft_curve = self.fft_plot.plot(freq,pen={'color':'y','width':2})
-        self.fft_plot.setXRange(signal_freq-10e3,signal_freq+plot_freq)
+        self.fft_plot.setXRange(signal_freq,signal_freq+plot_freq)
         self.fft_plot.setYRange(-60,0)
         self.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
         self.fft_plot.setLabel("left", text="Magnitude", units="dB", **label_style)
         self.fft_plot.setTitle("Received Signal - Frequency Spectrum", **title_style)
         self.fft_threshold = self.fft_plot.plot(freq,pen={'color':'r','width':2}) #cfar threshold on fft plot
-        layout.addWidget(self.fft_plot,1,0,1,3)
+        layout.addWidget(self.fft_plot,1,0,1,4)
 
         #waterfall plot, maps gain to color, frequency spectrum over time
         self.water = pg.PlotWidget()
@@ -70,7 +78,7 @@ class MainWindow(QMainWindow):
         self.water.setLabel("left", "Frequency", units="Hz", **label_style)
         self.water.setLabel("bottom", "Time", units="sec", **label_style)
         self.imageitem.setLevels([-45,0])
-        layout.addWidget(self.water,2,0,1,3)
+        layout.addWidget(self.water,2,0,1,4)
         self.img_array = np.ones((params.num_slices,params.fft_size))*-100
 
 
@@ -129,14 +137,36 @@ class MainWindow(QMainWindow):
 
         self.get_cfar_values()
 
-        self.DOA = QLabel("DOA: ")
-        self.DOA.setMinimumWidth(400)
+        self.DOA = QLabel("Countdown: ")
+        self.DOA.setMinimumWidth(150)
         DOA_font = QFont()
-        DOA_font.setPointSize(30)
+        DOA_font.setPointSize(22)
         self.DOA.setFont(DOA_font)
-        layout.addWidget(self.DOA,1,4)
-        # self.saveDataButton = QPushButton()
-        # layout.addWidget(self.saveDataButton,4,0,1,1)
+        layout.addWidget(self.DOA,0,4)
+
+        self.dataLabel = QLabel("Data Acquisition: ")
+        self.dataLabel.setMinimumWidth(150)
+        data_font = QFont()
+        data_font.setPointSize(22)
+        self.dataLabel.setFont(data_font)
+        layout.addWidget(self.dataLabel,5,0)
+        
+        self.saveDataButtonBW = QPushButton("Boresight Waving")
+        self.saveDataButtonBW.setMinimumWidth(20)
+        self.saveDataButtonBW.clicked.connect(self.save_boresight_waving)
+        layout.addWidget(self.saveDataButtonBW,5,1)
+
+        self.saveDataButtonBS = QPushButton("Boresight Standing")
+        self.saveDataButtonBS.setMinimumWidth(20)
+        self.saveDataButtonBS.clicked.connect(self.save_boresight_standing)
+        layout.addWidget(self.saveDataButtonBS,5,2)
+
+        self.countdownTxt = QLabel("waiting...")
+        self.countdownTxt.setMinimumWidth(150)
+        DOA_font = QFont()
+        DOA_font.setPointSize(50)
+        self.countdownTxt.setFont(DOA_font)
+        layout.addWidget(self.countdownTxt,1,4)
 
 
         widget.setLayout(layout)
@@ -151,6 +181,33 @@ class MainWindow(QMainWindow):
         params.bias = self.cfar_bias.value()
         params.num_guard_cells = self.cfar_guard.value()
         params.num_ref_cells = self.cfar_ref.value()
+    def save_boresight_waving(self,label):
+        self.set_record_flag("data/waving_boresight/wbd.npy")
+    def save_boresight_standing(self,label):
+        self.set_record_flag("data/standing_boresight/wbs.npy")
+    def set_record_flag(self,save_file):
+        if not self.recording:
+            self.recording = True
+            self.framesLeft = params.num_frames
+            self.saveFile=save_file
+            params.save_file=save_file
+            self.countdown = 4
+            self.countdownTxt.setText(str(self.countdown))
+            self.start_countdown()
+    def start_countdown(self):
+        self.countdown-=1
+        self.countdownTxt.setText(str(self.countdown))
+        if self.countdown > 0:
+            self.countdownTimer.setSingleShot(True)
+            print("Starting countdown timer")
+            self.countdownTimer.start(1000)
+            return
+        else:
+            print("Countdown complete, data acquisition starting")
+            self.acquire = True
+
+    
+
 
     pass
 
@@ -163,10 +220,11 @@ if __name__ == "__main__":
 
     def update():
         print("update")
+        # pass
 
     timer = QtCore.QTimer()
     timer.timeout.connect(update)
-    timer.start(1000)
+    timer.start(500)
 
     
     app.exec()
