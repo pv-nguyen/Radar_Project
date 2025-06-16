@@ -24,10 +24,10 @@ from npy_append_array import NpyAppendArray
 import params
 params.init()
 
-import monopulse_tracking as monopulse
+import Pluto.test.monopulse_tracking as monopulse
 from target_detection import cfar
 from gui import MainWindow
-import range_doppler_plot as RD
+import Pluto.test.range_doppler_plot as RD
 
 #Get IP addresses
 load_dotenv()
