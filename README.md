@@ -9,6 +9,8 @@ Project Summary
 </h1>
  <p>
    This project uses the CN0566 Radar Eval Kit from Analog Devices to create an FMCW Radar to retrieve range and velocity information which can then be used to identify whether or not a person is waving using a machine learning model
+
+  video demo: https://youtube.com/shorts/cu3s1KRIo6I?feature=share
  </p>
 
 ## Overview
