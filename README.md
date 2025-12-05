@@ -32,3 +32,6 @@ The spectrogram is essentially an image. The plot is fed into a machine learning
 
 ## Future Considerations and Improvements
 There are many areas of improvement for this project as this was an introduction to signal processing, RF theory, and AI/machine learning for me. There are many different AI models and techniques that can be explored to increase accuracy. This project also only focuses on single target and binary classification.
+
+## Project Infographic
+<br>![Design Flow](./FMCW_Infographic.png)
